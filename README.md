@@ -9,6 +9,10 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
+## 🎬 Demo
+👉 [Watch the demo on Loom](https://loom.com/your-link-here)
+
+---
 
 ## 📋 Overview
 
