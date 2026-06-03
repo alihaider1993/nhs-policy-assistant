@@ -10,7 +10,7 @@
 
 ---
 ## 🎬 Demo
-👉 [Watch the demo on Loom](https://loom.com/your-link-here)
+👉 [Watch the demo on Loom](https://www.loom.com/share/2feeca72662e47a3bca68f18d1991840)
 
 ---
 
