@@ -30,6 +30,27 @@ The assistant retrieves relevant chunks from official NHS policy documents and g
 
 ---
 
+## 👨‍💻 About Me & Why I Built This
+
+My name is **Syed Ali Haider** and  I am building hands-on Azure AI and Generative AI projects to transition into an AI-focused cloud and solutions engineering career.
+
+The idea for this project came from a personal experience. My partner recently began working for the NHS in the UK. She would regularly come home with questions about her employment rights — sick pay, leave entitlements, workplace policies — and we'd spend ages searching through lengthy NHS documents trying to find a clear answer. That frustration became the inspiration for this assistant.
+
+NHS staff — doctors, nurses, admin — deserve quick, clear answers about their own 
+rights without having to wade through 100+ page policy documents, often during already 
+stressful situations. This assistant changes that.
+
+**What this project taught me that no tutorial covers:**  
+The hardest part wasn't the code — it was configuring RBAC and Managed Identity 
+permission chains across Azure Storage, AI Search, Foundry, and Document Intelligence. 
+Real Azure deployments are about permissions as much as architecture. I debugged every 
+error, understood every fix, and built something that genuinely works end-to-end.
+
+
+---
+
+
+
 ## 📈 Sample Queries & Results
 
 The assistant successfully answers questions grounded in NHS policy documents, including:
@@ -221,24 +242,6 @@ nhs-policy-assistant/
 
 
 
-## 👨‍💻 About Me & Why I Built This
-
-My name is **Syed Ali Haider** and  I am building hands-on Azure AI and Generative AI projects to transition into an AI-focused cloud and solutions engineering career.
-
-The idea for this project came from a personal experience. My partner recently began working for the NHS in the UK. She would regularly come home with questions about her employment rights — sick pay, leave entitlements, workplace policies — and we'd spend ages searching through lengthy NHS documents trying to find a clear answer. That frustration became the inspiration for this assistant.
-
-NHS staff — doctors, nurses, admin — deserve quick, clear answers about their own 
-rights without having to wade through 100+ page policy documents, often during already 
-stressful situations. This assistant changes that.
-
-**What this project taught me that no tutorial covers:**  
-The hardest part wasn't the code — it was configuring RBAC and Managed Identity 
-permission chains across Azure Storage, AI Search, Foundry, and Document Intelligence. 
-Real Azure deployments are about permissions as much as architecture. I debugged every 
-error, understood every fix, and built something that genuinely works end-to-end.
-
-
----
 
 
 ## 🚀 Future Plans
