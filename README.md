@@ -16,7 +16,7 @@
 
 ## 📋 Overview
 
-The **NHS Employee Policy Assistant** is a portfolio project demonstrating a production-grade **Retrieval-Augmented Generation (RAG)** pipeline built entirely on Microsoft Azure.
+The **NHS Employee Policy Assistant** is a portfolio project demonstrating an end-to-end  **Retrieval-Augmented Generation (RAG)** pipeline built entirely on Microsoft Azure.
 
 NHS staff (doctors, nurses, admin) can ask natural language questions like:
 
