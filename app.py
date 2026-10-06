@@ -1,8 +1,8 @@
 # NHS Employee Policy Assistant
 # Author: Syed Ali Haider 
 # GitHub: github.com/alihaider1993/nhs-policy-assistant
-# Built: June 2026
-#
+
+
 # I built this to help NHS staff find clear answers about their employment
 # rights without reading through lengthy policy documents. The assistant
 # uses a RAG pipeline over 16+ official NHS documents, powered by
