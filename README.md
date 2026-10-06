@@ -1,6 +1,6 @@
 # 🏥 NHS Employee Policy Assistant
 
-> A RAG-powered chatbot that lets NHS staff query their employment rights, sick pay, leave entitlements, whistleblowing rights, and workplace policies — in plain English.
+> A RAG-powered chatbot that lets NHS staff query their employment rights, sick pay, leave entitlements, whistleblowing rights, and workplace policies — in plain English. Covers general NHS Policy. 
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
 ![Azure OpenAI](https://img.shields.io/badge/Azure%20OpenAI-GPT--4o-0078D4?logo=microsoft-azure)
