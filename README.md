@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
 ![Azure OpenAI](https://img.shields.io/badge/Azure%20OpenAI-GPT--4.1%20mini-0078D4?logo=microsoft-azure)
-![Azure AI Search](https://img.shields.io/badge/Azure%20AI%20Search-RAG-0078D4?logo=microsoft-azure)
+![BM25](https://img.shields.io/badge/Retrieval-BM25-555)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35-FF4B4B?logo=streamlit)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -69,23 +69,23 @@ The assistant also refuses out-of-scope questions such as weather, sports result
 
 ```
 ┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────────┐
-│   Streamlit UI  │───▶│ Azure OpenAI         │────▶│  Azure AI Search    │
-│  (Chat frontend)│     │ GPT-4.1 mini         │     │  (Keyword + semantic│
-└─────────────────┘     │ (On Your Data)       │     │   ranker, Free tier)│
-                        └──────────────────────┘     └──────────▲──────────┘
-                                                                │
-                                                     ┌──────────┴──────────┐
-                                                     │  ingest.py          │
-                                                     │  (NHS PDFs → chunks)│
-                                                     └─────────────────────┘
+│   Streamlit UI  │───▶│ BM25 search (in-app) │────▶│ Azure OpenAI        │
+│  (Chat frontend)│     │ top 5 policy chunks  │     │ GPT-4.1 mini        │
+└─────────────────┘     └──────────▲───────────┘     │ (answers + cites)   │
+                                   │                 └─────────────────────┘
+                        ┌──────────┴───────────┐
+                        │  data/chunks.json    │
+                        │  built by ingest.py  │
+                        │  from the NHS PDFs   │
+                        └──────────────────────┘
 ```
 
 ### Azure Resources
 
 | Resource | Purpose | Tier / cost |
 |---|---|---|
-| Azure OpenAI | GPT-4.1 mini deployment (10K tokens/min cap) | Global Standard, pay per token (~£0.002 per question) |
-| Azure AI Search | Keyword index + semantic ranker over NHS docs | Free (50 MB, 1,000 semantic queries/month) |
+| Azure OpenAI | GPT-4.1 mini deployment (10K tokens/min cap) | Global Standard, pay per token (~£0.001 per question) |
+| BM25 search (`rank-bm25`) | Retrieval over `data/chunks.json`, in the app's memory | Free — no search service |
 | Streamlit Community Cloud | Hosting | Free |
 | Cost Management budget | £5/month alert on the resource group | Free |
 
@@ -117,7 +117,7 @@ The assistant is grounded in **15 official NHS policy documents** (961 pages) in
 * 15 NHS policy documents indexed (1,028 chunks)
 * 961 pages of NHS guidance and workforce policies
 * Azure OpenAI GPT-4.1 mini powered responses
-* Azure AI Search keyword retrieval with semantic re-ranking
+* In-memory BM25 retrieval — no search service to host
 * Document-grounded answers with citations
 * End-to-end Retrieval-Augmented Generation (RAG) architecture
 
@@ -125,7 +125,7 @@ The assistant is grounded in **15 official NHS policy documents** (961 pages) in
 
 ## ✨ Features
 
-- 🔍 **Semantic Search** — keyword retrieval re-ranked by Azure's semantic ranker for accurate results
+- 🔍 **Keyword Search** — BM25 ranking over 1,028 policy chunks, with follow-up questions matched against the previous question
 - 📄 **Document Citations** — every answer shows which NHS policy document it came from
 - 💬 **Conversation Memory** — maintains context across multi-turn conversations
 - 🕐 **Chat History** — sidebar stores recent conversations
@@ -142,8 +142,7 @@ The assistant is grounded in **15 official NHS policy documents** (961 pages) in
 - Python 3.11+
 - Azure subscription with:
   - Azure OpenAI resource with a `gpt-4.1-mini` deployment
-  - Azure AI Search (Free tier is enough)
-  - The NHS policy PDFs in an `Uploads/` folder (not committed)
+  - Only needed to rebuild `data/chunks.json`: the NHS policy PDFs in an `Uploads/` folder (not committed)
 
 ### Local Setup
 
@@ -163,7 +162,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your Azure credentials (see Configuration section)
 
-# 5. Build the search index from the PDFs in Uploads/
+# 5. (Optional) Rebuild data/chunks.json after changing the PDFs in Uploads/
 pip install pypdf
 python ingest.py
 
@@ -180,11 +179,6 @@ Copy `.env.example` to `.env` and fill in your values:
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AZURE_OPENAI_KEY=your-key-here
 AZURE_OPENAI_DEPLOYMENT=gpt-4.1-mini
-
-# Azure AI Search (from portal.azure.com → your search service → Keys → admin key)
-AZURE_SEARCH_ENDPOINT=https://your-search-service.search.windows.net
-AZURE_SEARCH_KEY=your-admin-key-here
-AZURE_SEARCH_INDEX=nhs-policy
 ```
 
 ---
@@ -201,9 +195,6 @@ AZURE_SEARCH_INDEX=nhs-policy
 AZURE_OPENAI_ENDPOINT = "https://..."
 AZURE_OPENAI_KEY = "..."
 AZURE_OPENAI_DEPLOYMENT = "gpt-4.1-mini"
-AZURE_SEARCH_ENDPOINT = "https://..."
-AZURE_SEARCH_KEY = "..."
-AZURE_SEARCH_INDEX = "nhs-policy"
 ```
 
 ---
@@ -213,7 +204,7 @@ AZURE_SEARCH_INDEX = "nhs-policy"
 - All credentials stored as environment variables or Streamlit secrets — never hardcoded
 - Public-demo guards: 500-character question limit, 20 questions per session, 10K tokens/min cap on the model deployment, and a £5/month budget alert
 - `.env` file excluded from version control via `.gitignore`
-- AI Search configured with `in_scope: true` to prevent hallucination outside the corpus
+- The model is instructed to answer only from the retrieved sources and to decline out-of-scope questions
 
 ---
 
@@ -221,11 +212,11 @@ AZURE_SEARCH_INDEX = "nhs-policy"
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Search type | Keyword + semantic ranker | BM25 retrieval re-ranked by Azure's semantic ranker; no embeddings, so the index fits the Free tier and costs nothing to build |
+| Search type | BM25 keyword search in the app | The corpus is small (1.8 MB of text), so in-memory search is fast and costs nothing — no search service, quota or idle shutdown |
 | Chunk size | ~1,800 characters, 250 overlap | Large enough to capture full policy clauses, small enough for precision |
 | Text extraction | Local `pypdf` in `ingest.py` | Reproducible from code and free (no Document Intelligence) |
-| Chat model | GPT-4.1 mini | Cheapest current non-reasoning model that supports On Your Data |
-| RAG approach | Azure AI Search "Add your data" | Native Azure integration, no custom orchestration needed |
+| Chat model | GPT-4.1 mini | Cheapest current non-reasoning mini model (~£0.001 per question) |
+| RAG approach | Custom retrieve-then-prompt | Numbered sources in the prompt; cited numbers are mapped back to document and page |
 | UI framework | Streamlit | Rapid prototyping, free cloud deployment, Python-native |
 
 ---
@@ -235,7 +226,8 @@ AZURE_SEARCH_INDEX = "nhs-policy"
 ```
 nhs-policy-assistant/
 ├── app.py                        # Main Streamlit application
-├── ingest.py                     # Builds the search index from Uploads/*.pdf
+├── ingest.py                     # Builds data/chunks.json from Uploads/*.pdf
+├── data/chunks.json              # Pre-built text chunks searched by the app
 ├── requirements.txt              # Python dependencies
 ├── .env.example                  # Environment variables template
 ├── .gitignore                    # Excludes .env and secrets

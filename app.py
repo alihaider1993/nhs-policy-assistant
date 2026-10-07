@@ -6,14 +6,16 @@
 # I built this to help NHS staff find clear answers about their employment
 # rights without reading through lengthy policy documents. The assistant
 # uses a RAG pipeline over 15 official NHS documents, powered by
-# Azure OpenAI (GPT-4.1 mini) and Azure AI Search with semantic ranking.
+# Azure OpenAI (GPT-4.1 mini) with in-memory BM25 search over the documents.
 
-import streamlit as st
-import requests
+import json
 import os
 import re
 
+import requests
+import streamlit as st
 from dotenv import load_dotenv
+from rank_bm25 import BM25Okapi
 
 st.set_page_config(page_title="NHS AI Policy Assistant", layout="wide")
 
@@ -38,9 +40,9 @@ AZURE_OPENAI_ENDPOINT = setting("AZURE_OPENAI_ENDPOINT").rstrip("/")
 AZURE_OPENAI_KEY      = setting("AZURE_OPENAI_KEY")
 DEPLOYMENT_NAME       = setting("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
 
-SEARCH_ENDPOINT = setting("AZURE_SEARCH_ENDPOINT")
-SEARCH_KEY      = setting("AZURE_SEARCH_KEY")
-SEARCH_INDEX    = setting("AZURE_SEARCH_INDEX", "nhs-policy")
+# Chunks built from the NHS PDFs by ingest.py
+CHUNKS_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "chunks.json")
+TOP_N_CHUNKS = 5
 
 # Guards for a public URL — every question is billed per token
 MAX_QUESTION_CHARS        = 500
@@ -78,7 +80,18 @@ Guidelines:
 - Be empathetic and professional in tone
 - If a question falls outside your knowledge base, say so honestly
 - For urgent or sensitive matters (e.g. bullying, harassment, whistleblowing), remind staff of confidential support routes
-- Always remind staff that policies may vary between NHS Trusts and Deaneries — encourage them to contact their local Trust HR department or Deanery for advice specific to their situation"""
+- Always remind staff that policies may vary between NHS Trusts and Deaneries — encourage them to contact their local Trust HR department or Deanery for advice specific to their situation
+
+Grounding rules:
+- Answer only from the numbered sources supplied below — never from general knowledge
+- Cite each fact with its source number in square brackets, e.g. [2]
+- If the sources don't answer the question, say you couldn't find it in the NHS policy documents and suggest contacting local HR
+- Politely decline questions unrelated to NHS employment policy"""
+
+NOT_FOUND_ANSWER = (
+    "I couldn't find anything about that in the NHS policy documents I have. "
+    "Try rephrasing your question, or contact your local Trust HR department."
+)
 # =========================
 # CHAT HISTORY
 # =========================
@@ -116,58 +129,72 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # =========================
+# RETRIEVAL
+# BM25 keyword search over the chunks in data/chunks.json — runs in memory,
+# so there is no search service to host or pay for
+# =========================
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "can", "do", "does", "for", "from",
+    "how", "i", "if", "in", "is", "it", "my", "of", "on", "or", "the", "to",
+    "what", "when", "which", "who", "will", "with", "you", "your",
+}
+
+
+def tokenize(text):
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    # Crude plural folding so "days" matches "day"
+    return [w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+            for w in words if w not in STOPWORDS]
+
+
+@st.cache_resource
+def load_index():
+    with open(CHUNKS_PATH, encoding="utf-8") as f:
+        chunks = json.load(f)
+    bm25 = BM25Okapi([tokenize(f"{c['title']} {c['content']}") for c in chunks])
+    return chunks, bm25
+
+
+def retrieve(query):
+    chunks, bm25 = load_index()
+    scores = bm25.get_scores(tokenize(query))
+    ranked = sorted(range(len(chunks)), key=lambda i: scores[i], reverse=True)[:TOP_N_CHUNKS]
+    return [chunks[i] for i in ranked if scores[i] > 0]
+
+
+# =========================
 # RAG FUNCTION
-# Fixed to match Azure Foundry exactly:
-# - semantic search (not simple)
-# - correct API version
-# - semantic configuration name
-# - in_scope + strictness to match Foundry defaults
+# Retrieves the best chunks, then asks the model to answer only from them
 # =========================
 def call_rag(question, history):
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": AZURE_OPENAI_KEY
-    }
+    # Include the previous question so follow-ups like "what about after 5 years?" still match
+    previous = [m["content"] for m in history if m["role"] == "user"][-1:]
+    sources = retrieve(" ".join(previous + [question]))
+    if not sources:
+        return {"answer": NOT_FOUND_ANSWER, "sources": []}
 
-    # Build messages with conversation history (like Foundry does)
+    context = "\n\n".join(
+        f"[{n}] {s['title']} (page {s['page']})\n{s['content']}"
+        for n, s in enumerate(sources, start=1)
+    )
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in history[-6:]:  # last 3 turns for context
         messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "system", "content": f"Sources from the NHS policy documents:\n\n{context}"})
     messages.append({"role": "user", "content": question})
-
-    payload = {
-        "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": 1000,
-        "data_sources": [
-            {
-                "type": "azure_search",
-                "parameters": {
-                    "endpoint": SEARCH_ENDPOINT,
-                    "index_name": SEARCH_INDEX,
-                    "authentication": {
-                        "type": "api_key",
-                        "key": SEARCH_KEY
-                    },
-                    "query_type": "semantic",
-                    "semantic_configuration": "nhs-policy-semantic-configuration",
-                    "top_n_documents": 5,
-                    "in_scope": True,
-                    "strictness": 3,
-                }
-            }
-        ]
-    }
 
     url = (
         f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{DEPLOYMENT_NAME}"
-        f"/chat/completions?api-version=2024-05-01-preview"
+        f"/chat/completions?api-version=2024-10-21"
     )
+    headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
+    payload = {"messages": messages, "temperature": 0.3, "max_tokens": 1000}
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
-        return response.json()
+        answer = response.json()["choices"][0]["message"]["content"]
     except requests.exceptions.Timeout:
         return {"error": "Request timed out. Please try again."}
     except requests.exceptions.HTTPError as e:
@@ -176,6 +203,11 @@ def call_rag(question, history):
         return {"error": f"The policy service returned an error ({e.response.status_code}). Please try again shortly."}
     except requests.exceptions.RequestException:
         return {"error": "Couldn't reach the policy service. Check your connection and try again."}
+
+    cited = sorted({int(n) for n in re.findall(r"\[(\d+)\]", answer) if 1 <= int(n) <= len(sources)})
+    # Remove [1] style inline tags — cleaner for end users; sources are listed below
+    answer = re.sub(r"\s*\[\d+\]", "", answer).strip()
+    return {"answer": answer, "sources": [sources[n - 1] for n in cited]}
 
 
 # =========================
@@ -214,45 +246,19 @@ if user_input:
             answer = f"❌ {result['error']}"
             st.error(answer)
         else:
-            try:
-                answer = result["choices"][0]["message"]["content"]
+            answer = result["answer"]
+            st.markdown(answer)
 
-                # Remove [doc1] style inline tags — cleaner for end users
-                answer = re.sub(r'\[doc\d+\]', '', answer).strip()
-
-                st.markdown(answer)
-
-                # Show source citations
-                try:
-                    citations = (
-                        result["choices"][0]["message"]
-                        .get("context", {})
-                        .get("citations", [])
-                    )
-                    if citations:
-                        st.markdown("---")
-                        st.markdown("**📚 Sources**")
-                        seen = set()
-                        for c in citations:
-                            title = (
-                                c.get("title")
-                                or c.get("filepath", "NHS Policy Document")
-                            )
-                            title = (
-                                title.replace(".pdf", "")
-                                     .replace("-", " ")
-                                     .replace("_", " ")
-                                     .title()
-                            )
-                            if title not in seen:
-                                st.caption(f"📄 {title}")
-                                seen.add(title)
-                except Exception:
-                    pass
-
-            except Exception:
-                answer = str(result)
-                st.markdown(answer)
+            # Show source citations, one line per document with its pages
+            pages_by_title = {}
+            for source in result["sources"]:
+                pages_by_title.setdefault(source["title"], set()).add(source["page"])
+            if pages_by_title:
+                st.markdown("---")
+                st.markdown("**📚 Sources**")
+                for title, pages in pages_by_title.items():
+                    page_list = ", ".join(str(p) for p in sorted(pages))
+                    st.caption(f"📄 {title} — p. {page_list}")
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
 

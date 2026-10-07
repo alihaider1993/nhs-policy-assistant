@@ -1,66 +1,57 @@
 # NHS Employee Policy Assistant — index builder
 # Author: Syed Ali Haider
 #
-# Rebuilds the Azure AI Search index from the NHS policy PDFs in ./Uploads.
-# Text is extracted locally (no Document Intelligence, no embeddings) so the
-# whole index fits on the Azure AI Search Free tier and costs nothing to build.
+# Turns the NHS policy PDFs in ./Uploads into text chunks saved to
+# data/chunks.json. The app searches these chunks in memory (BM25), so there
+# is no search service to pay for. Re-run this whenever the PDFs change and
+# commit the updated data/chunks.json.
 #
 # Usage:
-#   pip install -r requirements.txt pypdf
-#   python ingest.py            # needs AZURE_SEARCH_* values in .env
+#   pip install pypdf
+#   python ingest.py
 
 import glob
 import hashlib
+import json
 import os
 import re
 
-import requests
-from dotenv import load_dotenv
 from pypdf import PdfReader
 
-load_dotenv()
-
-SEARCH_ENDPOINT = os.environ["AZURE_SEARCH_ENDPOINT"].rstrip("/")
-SEARCH_ADMIN_KEY = os.environ["AZURE_SEARCH_KEY"]
-SEARCH_INDEX = os.environ.get("AZURE_SEARCH_INDEX", "nhs-policy")
-SEMANTIC_CONFIG = "nhs-policy-semantic-configuration"
-API_VERSION = "2024-07-01"
 DOCS_DIR = "Uploads"
+OUTPUT_PATH = os.path.join("data", "chunks.json")
 
 # ~400 tokens per chunk with overlap, so a clause split across chunks is still found
 CHUNK_CHARS = 1800
 OVERLAP_CHARS = 250
 
-HEADERS = {"Content-Type": "application/json", "api-key": SEARCH_ADMIN_KEY}
-
-INDEX_SCHEMA = {
-    "name": SEARCH_INDEX,
-    "fields": [
-        {"name": "id", "type": "Edm.String", "key": True, "filterable": True},
-        {"name": "content", "type": "Edm.String", "searchable": True, "analyzer": "en.microsoft"},
-        {"name": "title", "type": "Edm.String", "searchable": True, "analyzer": "en.microsoft"},
-        {"name": "filepath", "type": "Edm.String", "filterable": True},
-        {"name": "url", "type": "Edm.String"},
-        {"name": "page", "type": "Edm.Int32", "filterable": True},
-    ],
-    "semantic": {
-        "configurations": [
-            {
-                "name": SEMANTIC_CONFIG,
-                "prioritizedFields": {
-                    "titleField": {"fieldName": "title"},
-                    "prioritizedContentFields": [{"fieldName": "content"}],
-                },
-            }
-        ]
-    },
+# Readable names shown in the app's source citations
+TITLES = {
+    "2025_09_Disciplinary_Policy.pdf": "Disciplinary Policy (2025)",
+    "B2044_NHS_EDI_Workforce_Plan.pdf": "NHS EDI Workforce Plan",
+    "HEE National Relocation Framework Final 1 November 2020.pdf": "HEE National Relocation Framework",
+    "NHS England » Data protection policy.pdf": "NHS England Data Protection Policy",
+    "NHS-People-Promise.pdf": "NHS People Promise",
+    "NHSi-Civility-and-Respect-Toolkit-v9.pdf": "NHS Civility and Respect Toolkit",
+    "Parenting Leave Policy (HR 010 V3 March 2021) ext to November 2024.pdf": "Parenting Leave Policy",
+    "Pay-and-Conditions-Circular-(MD)-1-2026_0.pdf": "Pay and Conditions Circular (MD) 1/2026",
+    "Pay-and-Conditions-Circular-(MD)-1-2026_0 (1).pdf": "Pay and Conditions Circular (MD) 1/2026",
+    "disciplinary_policy_and_procedure.pdf": "Disciplinary Policy and Procedure",
+    "flexible-working-toolkit-for-individuals.pdf": "Flexible Working Toolkit",
+    "guide-nhs-scotland-grievance-policy-guide-for-employees-1-2-last-updated-march-2026.pdf":
+        "NHS Scotland Grievance Policy Guide",
+    "heeoe_gpst_lead_employer_-_grievance_policy_and_procedure.pdf": "Grievance Policy and Procedure",
+    "maternity_adoption_leave_policy_v_3_2.pdf": "Maternity and Adoption Leave Policy",
+    "nhs-terms-and-conditions-of-service-handbook-Version 60.pdf":
+        "NHS Terms and Conditions of Service Handbook (v60)",
+    "promoting-health-and-wellbeing-and-attendance-at-work--2225_1.pdf":
+        "Promoting Health, Wellbeing and Attendance at Work",
 }
 
 
 def clean_title(filename):
     stem = os.path.splitext(filename)[0]
     stem = re.sub(r"[_\-]+", " ", stem)
-    stem = re.sub(r"\s*\(\d+\)$", "", stem)  # "file (1)" download duplicates
     return re.sub(r"\s+", " ", stem).strip()
 
 
@@ -76,6 +67,7 @@ def chunk_pdf(path):
             start_page = page_number
         buffer = f"{buffer} {text}".strip()
         while len(buffer) >= CHUNK_CHARS:
+            # Prefer to end on a sentence; always advance at least half a chunk
             cut = buffer.rfind(". ", CHUNK_CHARS // 2, CHUNK_CHARS) + 1 or CHUNK_CHARS
             yield start_page, buffer[:cut].strip()
             buffer = buffer[cut - OVERLAP_CHARS:]
@@ -84,8 +76,8 @@ def chunk_pdf(path):
         yield start_page, buffer.strip()
 
 
-def build_documents():
-    docs, seen_hashes = [], set()
+def build_chunks():
+    chunks, seen_hashes = [], set()
     for path in sorted(glob.glob(os.path.join(DOCS_DIR, "*.pdf"))):
         with open(path, "rb") as f:
             digest = hashlib.md5(f.read()).hexdigest()
@@ -95,40 +87,20 @@ def build_documents():
             continue
         seen_hashes.add(digest)
 
-        chunks = list(chunk_pdf(path))
-        for i, (page, text) in enumerate(chunks):
-            docs.append({
-                "@search.action": "upload",
-                "id": f"{digest[:12]}-{i:04d}",
-                "content": text,
-                "title": clean_title(filename),
-                "filepath": filename,
-                "url": "",
-                "page": page,
-            })
-        print(f"{len(chunks):5d} chunks  {filename}")
-    return docs
+        title = TITLES.get(filename, clean_title(filename))
+        pdf_chunks = list(chunk_pdf(path))
+        for page, text in pdf_chunks:
+            chunks.append({"title": title, "page": page, "content": text})
+        print(f"{len(pdf_chunks):5d} chunks  {title}")
+    return chunks
 
 
 def main():
-    base = f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX}"
-    # Recreate the index so a rebuild never leaves stale chunks behind
-    requests.delete(f"{base}?api-version={API_VERSION}", headers=HEADERS, timeout=30)
-    r = requests.put(f"{base}?api-version={API_VERSION}", headers=HEADERS, json=INDEX_SCHEMA, timeout=30)
-    r.raise_for_status()
-
-    docs = build_documents()
-    for i in range(0, len(docs), 500):
-        batch = docs[i:i + 500]
-        r = requests.post(
-            f"{base}/docs/index?api-version={API_VERSION}",
-            headers=HEADERS, json={"value": batch}, timeout=120,
-        )
-        r.raise_for_status()
-        failed = [d["key"] for d in r.json()["value"] if not d["status"]]
-        if failed:
-            raise RuntimeError(f"{len(failed)} chunks failed to upload, e.g. {failed[:3]}")
-    print(f"Uploaded {len(docs)} chunks to index '{SEARCH_INDEX}'")
+    chunks = build_chunks()
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(chunks, f, ensure_ascii=False, indent=1)
+    print(f"Saved {len(chunks)} chunks to {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
