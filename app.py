@@ -5,13 +5,15 @@
 
 # I built this to help NHS staff find clear answers about their employment
 # rights without reading through lengthy policy documents. The assistant
-# uses a RAG pipeline over 16+ official NHS documents, powered by
-# Azure OpenAI (GPT-4o) and Azure AI Search with hybrid semantic search.
+# uses a RAG pipeline over 15 official NHS documents, powered by
+# Azure OpenAI (GPT-4.1 mini) and Azure AI Search with semantic ranking.
 
 import streamlit as st
 import requests
 import os
 import re
+
+from dotenv import load_dotenv
 
 st.set_page_config(page_title="NHS AI Policy Assistant", layout="wide")
 
@@ -20,14 +22,29 @@ st.write("Ask questions about NHS policies, leave, bullying, whistleblowing, and
 
 # =========================
 # 🔐 AZURE CONFIG
+# Streamlit Cloud reads these from Settings → Secrets; locally they come from .env
 # =========================
-AZURE_OPENAI_ENDPOINT = "https://foundry-nhs-employee-assistant.openai.azure.com"
-AZURE_OPENAI_KEY      = st.secrets.get("AZURE_OPENAI_KEY", os.getenv("AZURE_OPENAI_KEY", ""))
-DEPLOYMENT_NAME       = "gpt-4o"
+load_dotenv()
 
-SEARCH_ENDPOINT = "https://nhs-search-basic.search.windows.net"
-SEARCH_KEY      = st.secrets.get("AZURE_SEARCH_KEY", os.getenv("AZURE_SEARCH_KEY", ""))
-SEARCH_INDEX    = "nhs-policy"
+
+def setting(name, default=""):
+    try:
+        return st.secrets[name]
+    except Exception:  # no secrets.toml locally — fall back to environment
+        return os.getenv(name, default)
+
+
+AZURE_OPENAI_ENDPOINT = setting("AZURE_OPENAI_ENDPOINT").rstrip("/")
+AZURE_OPENAI_KEY      = setting("AZURE_OPENAI_KEY")
+DEPLOYMENT_NAME       = setting("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
+
+SEARCH_ENDPOINT = setting("AZURE_SEARCH_ENDPOINT")
+SEARCH_KEY      = setting("AZURE_SEARCH_KEY")
+SEARCH_INDEX    = setting("AZURE_SEARCH_INDEX", "nhs-policy")
+
+# Guards for a public URL — every question is billed per token
+MAX_QUESTION_CHARS        = 500
+MAX_QUESTIONS_PER_SESSION = 20
 
 # =========================
 # 💡 SUGGESTED QUESTIONS
@@ -80,9 +97,9 @@ with st.sidebar:
     st.markdown("""
     **📋 Documents indexed:**
     - AfC Handbook v60 (2026)
-    - NHS Constitution 2023
+    - NHS People Promise
     - Grievance & Disciplinary Policies
-    - Whistleblowing / Freedom to Speak Up
+    - Maternity, Adoption & Parenting Leave
     - Flexible Working Toolkit
     - Civility & Respect Toolkit
     - Health & Wellbeing at Work
@@ -154,9 +171,11 @@ def call_rag(question, history):
     except requests.exceptions.Timeout:
         return {"error": "Request timed out. Please try again."}
     except requests.exceptions.HTTPError as e:
-        return {"error": f"HTTP error: {e.response.status_code} — {e.response.text}"}
-    except Exception as e:
-        return {"error": str(e)}
+        if e.response.status_code == 429:
+            return {"error": "The assistant is busy right now. Please wait a minute and try again."}
+        return {"error": f"The policy service returned an error ({e.response.status_code}). Please try again shortly."}
+    except requests.exceptions.RequestException:
+        return {"error": "Couldn't reach the policy service. Check your connection and try again."}
 
 
 # =========================
@@ -170,6 +189,17 @@ if "pending_question" in st.session_state and st.session_state["pending_question
     user_input = st.session_state["pending_question"]
     st.session_state["pending_question"] = None
 
+questions_asked = sum(1 for m in st.session_state.messages if m["role"] == "user")
+if user_input and len(user_input) > MAX_QUESTION_CHARS:
+    st.warning(f"Please keep your question under {MAX_QUESTION_CHARS} characters.")
+    user_input = None
+elif user_input and questions_asked >= MAX_QUESTIONS_PER_SESSION:
+    st.warning(
+        f"You've reached the {MAX_QUESTIONS_PER_SESSION}-question limit for this demo session. "
+        "Clear the conversation to start again."
+    )
+    user_input = None
+
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
 
@@ -181,7 +211,7 @@ if user_input:
             result = call_rag(user_input, st.session_state.messages[:-1])
 
         if "error" in result:
-            answer = f"❌ Error: {result['error']}"
+            answer = f"❌ {result['error']}"
             st.error(answer)
         else:
             try:

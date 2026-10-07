@@ -20,3 +20,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Source PDFs (rebuild the index with ingest.py)
+Uploads/
