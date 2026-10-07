@@ -40,6 +40,13 @@ AZURE_OPENAI_ENDPOINT = setting("AZURE_OPENAI_ENDPOINT").rstrip("/")
 AZURE_OPENAI_KEY      = setting("AZURE_OPENAI_KEY")
 DEPLOYMENT_NAME       = setting("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
 
+if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY:
+    st.error(
+        "The assistant isn't configured yet: AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY "
+        "are missing. Add them in Streamlit → Settings → Secrets (or .env locally)."
+    )
+    st.stop()
+
 # Chunks built from the NHS PDFs by ingest.py
 CHUNKS_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "chunks.json")
 TOP_N_CHUNKS = 5
